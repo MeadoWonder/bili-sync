@@ -12,6 +12,16 @@ pub enum NFOTimeType {
     PubTime,
 }
 
+/// 分页视频保存形式
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
+pub enum VideoPageType {
+    #[serde(rename = "tvshow")]
+    #[default]
+    TvShow,
+    #[serde(rename = "multi_parts")]
+    MultiParts,
+}
+
 /// 并发下载相关的配置
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConcurrentLimit {
