@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 
 use crate::adapter::{VideoSource, VideoSourceEnum};
 use crate::bilibili::{BestStream, BiliClient, BiliError, Dimension, PageInfo, Video, VideoInfo};
-use crate::config::{ARGS, Config, PathSafeTemplate};
+use crate::config::{ARGS, Config, PathSafeTemplate, LibraryType};
 use crate::downloader::Downloader;
 use crate::error::ExecutionStatus;
 use crate::utils::download_context::DownloadContext;
@@ -242,13 +242,13 @@ pub async fn download_video_pages(
         .upper_path
         .join(upper_id.chars().next().context("upper_id is empty")?.to_string())
         .join(upper_id);
-    let is_single_page = video_model.single_page.context("single_page is null")?;
-    // 对于单页视频，page 的下载已经足够
-    // 对于多页视频，page 下载仅包含了分集内容，需要额外补上视频的 poster 的 tvshow.nfo
+    let should_download_as_tvshow = cx.config.library_type == LibraryType::TvShow || !video_model.single_page.context("single_page is null")?;
+    // 对于 MixedContent 的单页视频，page 的下载已经足够
+    // 对于 MixedContent 的多页视频和 TvShow 媒体库，page 下载仅包含了分集内容，需要额外补上视频的 poster 和 tvshow.nfo
     let (res_1, res_2, res_3, res_4, res_5) = tokio::join!(
         // 下载视频封面
         fetch_video_poster(
-            separate_status[0] && !is_single_page && !cx.config.skip_option.no_poster,
+            separate_status[0] && should_download_as_tvshow && !cx.config.skip_option.no_poster,
             &video_model,
             base_path.join("poster.jpg"),
             base_path.join("fanart.jpg"),
@@ -256,7 +256,7 @@ pub async fn download_video_pages(
         ),
         // 生成视频信息的 nfo
         generate_video_nfo(
-            separate_status[1] && !is_single_page && !cx.config.skip_option.no_video_nfo,
+            separate_status[1] && should_download_as_tvshow && !cx.config.skip_option.no_video_nfo,
             &video_model,
             base_path.join("tvshow.nfo"),
             cx
@@ -387,25 +387,38 @@ pub async fn download_page(
             .file_name()
             .context("invalid page path format")?
             .to_string_lossy();
-        if is_single_page {
-            // 单页下的路径是 {base_path}/{base_name}.mp4
+        if cx.config.library_type == LibraryType::TvShow {
+            // 如果媒体库类型是 TvShow ，单页和多页的路径都是 {base_path}/{base_name} - S01Exx.mp4
             (
                 old_video_path.parent().context("invalid page path format")?,
-                old_video_filename.trim_end_matches(".mp4").to_string(),
-            )
-        } else {
-            // 多页下的路径是 {base_path}/Season 1/{base_name} - S01Exx.mp4
-            (
-                old_video_path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .context("invalid page path format")?,
                 old_video_filename
                     .rsplit_once(" - ")
                     .context("invalid page path format")?
                     .0
                     .to_string(),
             )
+        } else {
+            // 如果媒体库类型是 MixedContent ，需要区分单页和多页
+            if is_single_page {
+                // 单页下的路径是 {base_path}/{base_name}.mp4
+                (
+                    old_video_path.parent().context("invalid page path format")?,
+                    old_video_filename.trim_end_matches(".mp4").to_string(),
+                )
+            } else {
+                // 多页下的路径是 {base_path}/Season 1/{base_name} - S01Exx.mp4
+                (
+                    old_video_path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .context("invalid page path format")?,
+                    old_video_filename
+                        .rsplit_once(" - ")
+                        .context("invalid page path format")?
+                        .0
+                        .to_string(),
+                )
+            }
         }
     } else {
         (
@@ -416,35 +429,49 @@ pub async fn download_page(
             )?,
         )
     };
-    let (poster_path, video_path, nfo_path, danmaku_path, fanart_path, subtitle_path) = if is_single_page {
+    let (poster_path, video_path, nfo_path, danmaku_path, fanart_path, subtitle_path) = if cx.config.library_type == LibraryType::TvShow {
+        // 如果媒体库类型是 TvShow ，单页和多页的路径都是 {base_path}/{base_name} - S01Exx.mp4
         (
-            base_path.join(format!("{}-poster.jpg", &base_name)),
-            base_path.join(format!("{}.mp4", &base_name)),
-            base_path.join(format!("{}.nfo", &base_name)),
-            base_path.join(format!("{}.zh-CN.default.ass", &base_name)),
-            Some(base_path.join(format!("{}-fanart.jpg", &base_name))),
-            base_path.join(format!("{}.srt", &base_name)),
+            base_path.join(format!("{} - S01E{:0>2}-thumb.jpg", &base_name, page_model.pid)),
+            base_path.join(format!("{} - S01E{:0>2}.mp4", &base_name, page_model.pid)),
+            base_path.join(format!("{} - S01E{:0>2}.nfo", &base_name, page_model.pid)),
+            base_path.join(format!("{} - S01E{:0>2}.zh-CN.default.ass", &base_name, page_model.pid)),
+            None,
+            base_path.join(format!("{} - S01E{:0>2}.srt", &base_name, page_model.pid)),
         )
     } else {
-        (
-            base_path
-                .join("Season 1")
-                .join(format!("{} - S01E{:0>2}-thumb.jpg", &base_name, page_model.pid)),
-            base_path
-                .join("Season 1")
-                .join(format!("{} - S01E{:0>2}.mp4", &base_name, page_model.pid)),
-            base_path
-                .join("Season 1")
-                .join(format!("{} - S01E{:0>2}.nfo", &base_name, page_model.pid)),
-            base_path
-                .join("Season 1")
-                .join(format!("{} - S01E{:0>2}.zh-CN.default.ass", &base_name, page_model.pid)),
-            // 对于多页视频，会在上一步 fetch_video_poster 中获取剧集的 fanart，无需在此处下载单集的
-            None,
-            base_path
-                .join("Season 1")
-                .join(format!("{} - S01E{:0>2}.srt", &base_name, page_model.pid)),
-        )
+        // 如果媒体库类型是 MixedContent ，需要区分单页和多页
+        if is_single_page {
+            (
+                base_path.join(format!("{}-poster.jpg", &base_name)),
+                base_path.join(format!("{}.mp4", &base_name)),
+                base_path.join(format!("{}.nfo", &base_name)),
+                base_path.join(format!("{}.zh-CN.default.ass", &base_name)),
+                Some(base_path.join(format!("{}-fanart.jpg", &base_name))),
+                base_path.join(format!("{}.srt", &base_name)),
+            )
+        } else {
+            // 多页下的路径是 {base_path}/Season 1/{base_name} - S01Exx.mp4
+            (
+                base_path
+                    .join("Season 1")
+                    .join(format!("{} - S01E{:0>2}-thumb.jpg", &base_name, page_model.pid)),
+                base_path
+                    .join("Season 1")
+                    .join(format!("{} - S01E{:0>2}.mp4", &base_name, page_model.pid)),
+                base_path
+                    .join("Season 1")
+                    .join(format!("{} - S01E{:0>2}.nfo", &base_name, page_model.pid)),
+                base_path
+                    .join("Season 1")
+                    .join(format!("{} - S01E{:0>2}.zh-CN.default.ass", &base_name, page_model.pid)),
+                // 对于多页视频，会在上一步 fetch_video_poster 中获取剧集的 fanart，无需在此处下载单集的
+                None,
+                base_path
+                    .join("Season 1")
+                    .join(format!("{} - S01E{:0>2}.srt", &base_name, page_model.pid)),
+            )
+        }
     };
     let dimension = match (page_model.width, page_model.height) {
         (Some(width), Some(height)) => Some(Dimension {
