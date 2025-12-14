@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 
 use crate::adapter::{VideoSource, VideoSourceEnum};
 use crate::bilibili::{BestStream, BiliClient, BiliError, Dimension, PageInfo, Video, VideoInfo};
-use crate::config::{ARGS, Config, PathSafeTemplate};
+use crate::config::{ARGS, Config, LibraryType, PathSafeTemplate};
 use crate::downloader::Downloader;
 use crate::error::ExecutionStatus;
 use crate::utils::download_context::DownloadContext;
@@ -242,13 +242,14 @@ pub async fn download_video_pages(
         .upper_path
         .join(upper_id.chars().next().context("upper_id is empty")?.to_string())
         .join(upper_id);
-    let is_single_page = video_model.single_page.context("single_page is null")?;
-    // 对于单页视频，page 的下载已经足够
-    // 对于多页视频，page 下载仅包含了分集内容，需要额外补上视频的 poster 的 tvshow.nfo
+    let should_download_as_tvshow = cx.config.library_type == LibraryType::MixedContent
+        && !video_model.single_page.context("single_page is null")?;
+    // 对于 Movie ，page 的下载已经足够
+    // 对于 TvShow ，page 下载仅包含了分集内容，需要额外补上视频的 poster 和 tvshow.nfo
     let (res_1, res_2, res_3, res_4, res_5) = tokio::join!(
         // 下载视频封面
         fetch_video_poster(
-            separate_status[0] && !is_single_page && !cx.config.skip_option.no_poster,
+            separate_status[0] && should_download_as_tvshow && !cx.config.skip_option.no_poster,
             &video_model,
             base_path.join("poster.jpg"),
             base_path.join("fanart.jpg"),
@@ -256,7 +257,7 @@ pub async fn download_video_pages(
         ),
         // 生成视频信息的 nfo
         generate_video_nfo(
-            separate_status[1] && !is_single_page && !cx.config.skip_option.no_video_nfo,
+            separate_status[1] && should_download_as_tvshow && !cx.config.skip_option.no_video_nfo,
             &video_model,
             base_path.join("tvshow.nfo"),
             cx
@@ -393,8 +394,19 @@ pub async fn download_page(
                 old_video_path.parent().context("invalid page path format")?,
                 old_video_filename.trim_end_matches(".mp4").to_string(),
             )
+        } else if cx.config.library_type == LibraryType::MixedContent {
+            // 多页下的路径需根据媒体库类型判断
+            // Movie 媒体库，多页路径是 {base_path}/Px - {base_name}.mp4
+            (
+                old_video_path.parent().context("invalid page path format")?,
+                old_video_filename
+                    .rsplit_once(" - ")
+                    .context("invalid page path format")?
+                    .1
+                    .to_string(),
+            )
         } else {
-            // 多页下的路径是 {base_path}/Season 1/{base_name} - S01Exx.mp4
+            // MixedContent 媒体库，多页路径是 {base_path}/Season 1/{base_name} - S01Exx.mp4
             (
                 old_video_path
                     .parent()
@@ -424,6 +436,15 @@ pub async fn download_page(
             base_path.join(format!("{}.zh-CN.default.ass", &base_name)),
             Some(base_path.join(format!("{}-fanart.jpg", &base_name))),
             base_path.join(format!("{}.srt", &base_name)),
+        )
+    } else if cx.config.library_type == LibraryType::Movie {
+        (
+            base_path.join(format!("P{} - {}-poster.jpg", page_model.pid, &base_name)),
+            base_path.join(format!("P{} - {}.mp4", page_model.pid, &base_name)),
+            base_path.join(format!("P{} - {}.nfo", page_model.pid, &base_name)),
+            base_path.join(format!("P{} - {}.zh-CN.default.ass", page_model.pid, &base_name)),
+            Some(base_path.join(format!("P{} - {}-fanart.jpg", page_model.pid, &base_name))),
+            base_path.join(format!("P{} - {}.srt", page_model.pid, &base_name)),
         )
     } else {
         (
@@ -675,7 +696,7 @@ pub async fn generate_page_nfo(
         return Ok(ExecutionStatus::Skipped);
     }
     let single_page = video_model.single_page.context("single_page is null")?;
-    let nfo = if single_page {
+    let nfo = if single_page || cx.config.library_type == LibraryType::Movie {
         NFO::Movie(video_model.to_nfo(cx.config.nfo_time_type))
     } else {
         NFO::Episode(page_model.to_nfo(cx.config.nfo_time_type))

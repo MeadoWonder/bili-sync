@@ -281,6 +281,17 @@
 							/>
 						</div>
 						<div class="space-y-2">
+							<Label for="page-type">媒体库类型</Label>
+							<select
+								id="page-type"
+								class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+								bind:value={formData.library_type}
+							>
+								<option value="mixed_content">混合内容（分p视频视为剧集）</option>
+								<option value="movie">影片（分p视频视为多个影片）</option>
+							</select>
+						</div>
+						<div class="space-y-2">
 							<Label for="video-name">视频名称模板</Label>
 							<Input id="video-name" bind:value={formData.video_name} />
 						</div>
