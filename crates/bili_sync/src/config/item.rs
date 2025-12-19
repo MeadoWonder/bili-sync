@@ -12,6 +12,16 @@ pub enum NFOTimeType {
     PubTime,
 }
 
+/// 媒体库类型
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
+pub enum LibraryType {
+    #[serde(rename = "mixed_content")]
+    #[default]
+    MixedContent,
+    #[serde(rename = "movie")]
+    Movie,
+}
+
 /// 并发下载相关的配置
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConcurrentLimit {
